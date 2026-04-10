@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as f:
 
 setup(
     name="inventra",
-    version="1.0.0",
+    version="1.0.1",
     author="",
     description="Multi-channel inventory sync for small and mid-market eCommerce — real-time conflict resolution, async sync, fraud-safe audit log",
     long_description=long_description,

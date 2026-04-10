@@ -21,14 +21,20 @@ from inventra.exceptions import (
 from inventra.advanced import (
     AuditLog,
     CancellationToken,
+    ChannelHealthMonitor,
+    ChannelHealthSnapshot,
+    DemandForecastEngine,
     InventoryCache,
     InventoryDiff,
     InventoryValidator,
     InventoryRule,
+    OversellRisk,
+    OversellRiskAnalyzer,
     PIIScrubber,
     RateLimiter,
     SyncPipeline,
     SyncProfiler,
+    SyncSpanEmitter,
     abatch_sync_items,
     batch_sync_items,
     diff_inventory,
@@ -37,7 +43,7 @@ from inventra.advanced import (
     stream_inventory,
 )
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __all__ = [
     # Core
     "InventorySync",
@@ -58,7 +64,7 @@ __all__ = [
     "ConflictError",
     "ChannelError",
     "ValidationError",
-    # Advanced
+    # Advanced — base
     "InventoryCache",
     "SyncPipeline",
     "InventoryValidator",
@@ -75,4 +81,11 @@ __all__ = [
     "diff_inventory",
     "AuditLog",
     "PIIScrubber",
+    # Advanced — expert
+    "DemandForecastEngine",
+    "ChannelHealthMonitor",
+    "ChannelHealthSnapshot",
+    "OversellRiskAnalyzer",
+    "OversellRisk",
+    "SyncSpanEmitter",
 ]
