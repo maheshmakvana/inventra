@@ -5,9 +5,9 @@ with open("README.md", "r", encoding="utf-8") as f:
 
 setup(
     name="inventra",
-    version="1.0.1",
+    version="1.2.0",
     author="",
-    description="Multi-channel inventory sync for small and mid-market eCommerce — real-time conflict resolution, async sync, fraud-safe audit log",
+    description="Multi-channel inventory sync for eCommerce — real-time conflict resolution, reorder point calculation, ABC/XYZ inventory analysis, demand forecasting, oversell prevention",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/inventra-py/inventra",
@@ -34,6 +34,9 @@ setup(
         "amazon inventory sync", "ecommerce inventory management",
         "inventory conflict resolution", "real-time inventory",
         "stockout prevention", "inventory automation python",
-        "multichannel ecommerce sync",
+        "multichannel ecommerce sync", "reorder point calculator python",
+        "safety stock calculation python", "ABC inventory analysis",
+        "XYZ inventory classification", "EOQ economic order quantity python",
+        "demand forecasting inventory", "inventory ABC XYZ python",
     ],
 )

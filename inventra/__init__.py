@@ -19,11 +19,13 @@ from inventra.exceptions import (
     ValidationError,
 )
 from inventra.advanced import (
+    ABCXYZResult,
     AuditLog,
     CancellationToken,
     ChannelHealthMonitor,
     ChannelHealthSnapshot,
     DemandForecastEngine,
+    InventoryABCAnalyzer,
     InventoryCache,
     InventoryDiff,
     InventoryValidator,
@@ -32,6 +34,8 @@ from inventra.advanced import (
     OversellRiskAnalyzer,
     PIIScrubber,
     RateLimiter,
+    ReorderPointCalculator,
+    ReorderRecommendation,
     SyncPipeline,
     SyncProfiler,
     SyncSpanEmitter,
@@ -43,7 +47,7 @@ from inventra.advanced import (
     stream_inventory,
 )
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 __all__ = [
     # Core
     "InventorySync",
@@ -81,11 +85,16 @@ __all__ = [
     "diff_inventory",
     "AuditLog",
     "PIIScrubber",
-    # Advanced — expert
+    # Advanced — expert v1.1.0
     "DemandForecastEngine",
     "ChannelHealthMonitor",
     "ChannelHealthSnapshot",
     "OversellRiskAnalyzer",
     "OversellRisk",
     "SyncSpanEmitter",
+    # Advanced — expert v1.2.0
+    "ReorderPointCalculator",
+    "ReorderRecommendation",
+    "InventoryABCAnalyzer",
+    "ABCXYZResult",
 ]

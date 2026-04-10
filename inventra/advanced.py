@@ -873,3 +873,325 @@ class _LogSpan:
     def __exit__(self, *args: Any) -> None:
         elapsed = round((time.monotonic() - self._t0) * 1000, 2)
         logger.debug("[span:end] service=%s operation=%s elapsed_ms=%s", self._service, self._name, elapsed)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EXPERT v1.2.0: REORDER POINT CALCULATOR
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class ReorderRecommendation:
+    """Reorder recommendation for a single SKU."""
+    sku: str
+    avg_daily_demand: float
+    demand_std_dev: float
+    lead_time_days: float
+    lead_time_std_dev: float
+    service_level: float        # e.g. 0.95 = 95%
+    safety_stock: float
+    reorder_point: float
+    economic_order_qty: Optional[float]
+    needs_reorder: bool
+    current_quantity: float
+    days_of_cover: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "sku": self.sku,
+            "avg_daily_demand": round(self.avg_daily_demand, 3),
+            "safety_stock": round(self.safety_stock, 1),
+            "reorder_point": round(self.reorder_point, 1),
+            "economic_order_qty": round(self.economic_order_qty, 1) if self.economic_order_qty else None,
+            "needs_reorder": self.needs_reorder,
+            "days_of_cover": round(self.days_of_cover, 1),
+        }
+
+
+class ReorderPointCalculator:
+    """
+    Calculate safety stock and reorder points using statistical inventory models.
+
+    Implements the standard safety stock formula using demand variability and
+    lead time variability. Optionally computes the Economic Order Quantity (EOQ)
+    when holding and ordering cost data is provided. Zero external dependencies.
+
+    Service level z-scores (95% = 1.645, 99% = 2.326):
+
+    Usage::
+
+        calc = ReorderPointCalculator()
+        rec = calc.calculate(
+            sku="SKU-001",
+            current_qty=45,
+            avg_daily_demand=10.0,
+            demand_std_dev=2.5,
+            lead_time_days=7,
+            lead_time_std_dev=1.0,
+            service_level=0.95,
+        )
+        print(rec.reorder_point)   # e.g. 93.6
+        print(rec.needs_reorder)   # True/False
+    """
+
+    _Z_SCORES: Dict[float, float] = {
+        0.90: 1.282,
+        0.95: 1.645,
+        0.97: 1.881,
+        0.99: 2.326,
+        0.999: 3.090,
+    }
+
+    def _z(self, service_level: float) -> float:
+        """Return the z-score for a given service level (interpolates if not in table)."""
+        keys = sorted(self._Z_SCORES.keys())
+        for i, k in enumerate(keys):
+            if abs(service_level - k) < 1e-9:
+                return self._Z_SCORES[k]
+            if service_level < k:
+                if i == 0:
+                    return self._Z_SCORES[k]
+                prev = keys[i - 1]
+                t = (service_level - prev) / (k - prev)
+                return self._Z_SCORES[prev] + t * (self._Z_SCORES[k] - self._Z_SCORES[prev])
+        return self._Z_SCORES[keys[-1]]
+
+    def calculate(
+        self,
+        sku: str,
+        current_qty: float,
+        avg_daily_demand: float,
+        demand_std_dev: float,
+        lead_time_days: float,
+        lead_time_std_dev: float = 0.0,
+        service_level: float = 0.95,
+        annual_demand: Optional[float] = None,
+        ordering_cost_usd: Optional[float] = None,
+        holding_cost_pct: float = 0.25,
+        unit_cost_usd: Optional[float] = None,
+    ) -> ReorderRecommendation:
+        """Compute safety stock, reorder point, and optionally EOQ for one SKU."""
+        import math
+        z = self._z(service_level)
+        # Combined variability formula (APICS standard)
+        combined_std = math.sqrt(
+            lead_time_days * demand_std_dev ** 2
+            + avg_daily_demand ** 2 * lead_time_std_dev ** 2
+        )
+        safety_stock = z * combined_std
+        reorder_point = avg_daily_demand * lead_time_days + safety_stock
+
+        eoq: Optional[float] = None
+        if annual_demand and ordering_cost_usd and unit_cost_usd and holding_cost_pct > 0:
+            h = unit_cost_usd * holding_cost_pct
+            if h > 0:
+                eoq = math.sqrt(2 * annual_demand * ordering_cost_usd / h)
+
+        days_cover = current_qty / avg_daily_demand if avg_daily_demand > 0 else float("inf")
+        return ReorderRecommendation(
+            sku=sku,
+            avg_daily_demand=avg_daily_demand,
+            demand_std_dev=demand_std_dev,
+            lead_time_days=lead_time_days,
+            lead_time_std_dev=lead_time_std_dev,
+            service_level=service_level,
+            safety_stock=safety_stock,
+            reorder_point=reorder_point,
+            economic_order_qty=eoq,
+            needs_reorder=current_qty <= reorder_point,
+            current_quantity=current_qty,
+            days_of_cover=days_cover,
+        )
+
+    def batch_calculate(
+        self,
+        items: List[Dict[str, Any]],
+        service_level: float = 0.95,
+    ) -> List[ReorderRecommendation]:
+        """
+        Calculate reorder recommendations for a batch of SKUs.
+
+        Args:
+            items: List of dicts with keys matching `calculate()` parameters.
+            service_level: Default service level if not provided per item.
+        """
+        results = []
+        for item in items:
+            sl = item.pop("service_level", service_level)
+            try:
+                results.append(self.calculate(**item, service_level=sl))
+            except Exception as exc:
+                logger.warning("ReorderPointCalculator: skipping %s — %s", item.get("sku"), exc)
+        return results
+
+    def items_needing_reorder(self, recommendations: List[ReorderRecommendation]) -> List[ReorderRecommendation]:
+        """Filter to only SKUs that need immediate reorder action."""
+        return [r for r in recommendations if r.needs_reorder]
+
+    def to_markdown(self, recommendations: List[ReorderRecommendation]) -> str:
+        """Render a Markdown reorder planning table."""
+        lines = [
+            "# Reorder Point Analysis",
+            "",
+            "| SKU | Avg Daily Demand | Safety Stock | Reorder Point | EOQ | Current Qty | Days Cover | Action |",
+            "|-----|-----------------|-------------|---------------|-----|-------------|------------|--------|",
+        ]
+        for r in recommendations:
+            action = "REORDER NOW" if r.needs_reorder else "OK"
+            eoq = f"{r.economic_order_qty:.0f}" if r.economic_order_qty else "—"
+            lines.append(
+                f"| {r.sku} | {r.avg_daily_demand:.1f} | {r.safety_stock:.1f} | "
+                f"{r.reorder_point:.1f} | {eoq} | {r.current_quantity:.0f} | "
+                f"{r.days_of_cover:.1f}d | **{action}** |"
+            )
+        return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EXPERT v1.2.0: INVENTORY ABC/XYZ ANALYZER
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class ABCXYZResult:
+    """ABC/XYZ classification result for a single SKU."""
+    sku: str
+    total_revenue: float
+    revenue_share_pct: float
+    cumulative_pct: float
+    abc_class: str          # "A", "B", "C"
+    demand_cv: float        # coefficient of variation
+    xyz_class: str          # "X" = stable, "Y" = variable, "Z" = erratic
+    combined: str           # e.g. "AX", "BZ"
+    policy_recommendation: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "sku": self.sku,
+            "total_revenue": round(self.total_revenue, 2),
+            "revenue_share_pct": round(self.revenue_share_pct, 2),
+            "abc_class": self.abc_class,
+            "xyz_class": self.xyz_class,
+            "combined": self.combined,
+            "policy_recommendation": self.policy_recommendation,
+        }
+
+
+class InventoryABCAnalyzer:
+    """
+    Classify inventory items using the ABC/XYZ framework.
+
+    ABC classification groups SKUs by cumulative revenue contribution:
+    - A: top 80% of revenue (typically ~20% of SKUs)
+    - B: next 15% of revenue
+    - C: remaining 5%
+
+    XYZ classification groups by demand variability (coefficient of variation):
+    - X: CV < 0.2 (stable, forecastable)
+    - Y: CV 0.2–0.5 (moderate variability)
+    - Z: CV > 0.5 (erratic, hard to forecast)
+
+    The combined AX–CZ matrix drives stocking and replenishment policies.
+
+    Usage::
+
+        analyzer = InventoryABCAnalyzer()
+        # revenue_data: {sku: [monthly_revenue_list]}
+        results = analyzer.classify(revenue_data)
+        print(analyzer.to_markdown(results))
+    """
+
+    _ABC_THRESHOLDS = (80.0, 95.0)   # cumulative % for A/B boundary, B/C boundary
+    _XYZ_THRESHOLDS = (0.2, 0.5)     # CV for X/Y boundary, Y/Z boundary
+
+    _POLICIES: Dict[str, str] = {
+        "AX": "Continuous replenishment with tight reorder points; prioritise stock availability.",
+        "AY": "Periodic review (weekly); hold moderate safety stock; monitor demand signal.",
+        "AZ": "Demand-driven replenishment; consult sales before ordering; reduce batch size.",
+        "BX": "Periodic review (biweekly); standard safety stock formula.",
+        "BY": "Monthly review; use moving-average forecast; accept moderate stockout risk.",
+        "BZ": "Order-on-demand; avoid large batches; consider vendor-managed inventory.",
+        "CX": "Reorder infrequently; consolidate orders to reduce admin overhead.",
+        "CY": "Minimal safety stock; review quarterly; consider discontinuation.",
+        "CZ": "Hold-to-order only; do not hold safety stock; review for rationalisation.",
+    }
+
+    def classify(self, revenue_data: Dict[str, List[float]]) -> List[ABCXYZResult]:
+        """
+        Classify SKUs by ABC/XYZ.
+
+        Args:
+            revenue_data: Mapping of sku → list of periodic revenue values
+                          (e.g. monthly sales £/$ per period).
+        """
+        import math, statistics
+
+        totals = {sku: sum(vals) for sku, vals in revenue_data.items()}
+        grand_total = sum(totals.values()) or 1.0
+
+        sorted_skus = sorted(totals, key=lambda s: totals[s], reverse=True)
+        cumulative = 0.0
+        results: List[ABCXYZResult] = []
+
+        for sku in sorted_skus:
+            rev = totals[sku]
+            share = rev / grand_total * 100
+            cumulative += share
+
+            if cumulative - share < self._ABC_THRESHOLDS[0]:
+                abc = "A"
+            elif cumulative - share < self._ABC_THRESHOLDS[1]:
+                abc = "B"
+            else:
+                abc = "C"
+
+            vals = revenue_data[sku]
+            if len(vals) >= 2:
+                mean = sum(vals) / len(vals)
+                std = statistics.stdev(vals)
+                cv = std / mean if mean > 0 else 0.0
+            else:
+                cv = 0.0
+
+            if cv < self._XYZ_THRESHOLDS[0]:
+                xyz = "X"
+            elif cv < self._XYZ_THRESHOLDS[1]:
+                xyz = "Y"
+            else:
+                xyz = "Z"
+
+            combined = abc + xyz
+            results.append(ABCXYZResult(
+                sku=sku,
+                total_revenue=rev,
+                revenue_share_pct=share,
+                cumulative_pct=cumulative,
+                abc_class=abc,
+                demand_cv=round(cv, 4),
+                xyz_class=xyz,
+                combined=combined,
+                policy_recommendation=self._POLICIES.get(combined, "Apply standard replenishment policy."),
+            ))
+        return results
+
+    def filter_class(self, results: List[ABCXYZResult], combined: str) -> List[ABCXYZResult]:
+        """Return only items with a specific combined classification (e.g. 'AX', 'CZ')."""
+        return [r for r in results if r.combined == combined]
+
+    def rationalisation_candidates(self, results: List[ABCXYZResult]) -> List[ABCXYZResult]:
+        """Return C-class items with erratic demand — prime candidates for SKU rationalisation."""
+        return [r for r in results if r.abc_class == "C" and r.xyz_class == "Z"]
+
+    def to_markdown(self, results: List[ABCXYZResult]) -> str:
+        """Render a Markdown ABC/XYZ classification table."""
+        lines = [
+            "# Inventory ABC/XYZ Classification",
+            "",
+            "| SKU | Revenue | Share % | Cumul. % | ABC | CV | XYZ | Combined | Policy |",
+            "|-----|---------|---------|----------|-----|-----|-----|----------|--------|",
+        ]
+        for r in results:
+            lines.append(
+                f"| {r.sku} | {r.total_revenue:,.0f} | {r.revenue_share_pct:.1f}% | "
+                f"{r.cumulative_pct:.1f}% | **{r.abc_class}** | {r.demand_cv:.3f} | "
+                f"**{r.xyz_class}** | **{r.combined}** | {r.policy_recommendation[:50]}… |"
+            )
+        return "\n".join(lines)
