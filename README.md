@@ -186,6 +186,22 @@ clean = PIIScrubber.scrub_metadata(metadata)
 
 `inventra` ships with a `MockChannelAdapter` for testing. Community and official adapters (Shopify, Amazon, eBay, WooCommerce, Etsy) can be built by subclassing `BaseChannelAdapter`.
 
+## Changelog
+
+### v1.2.1 (2026-04-10)
+- Added Changelog section to README for release traceability
+
+### v1.2.0
+- Added `ReorderPointCalculator` — demand-driven reorder point and safety stock calculations
+- Added `InventoryABCAnalyzer` — ABC/XYZ segmentation for inventory prioritisation
+- Expanded SEO keywords for PyPI discoverability
+
+### v1.0.1
+- Advanced features: pipeline, caching, validation, diff/trend, streaming, audit log
+
+### v1.0.0
+- Initial release: multi-channel inventory sync, conflict resolution, drift detection, audit log
+
 ## License
 
 MIT
